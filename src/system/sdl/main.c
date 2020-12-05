@@ -133,6 +133,7 @@ static struct
     struct
     {
         bool state[tic_keys_count];
+        char text;
 
 #if defined(TOUCH_INPUT_SUPPORT)
         struct
@@ -772,9 +773,12 @@ static void processJoysticks()
                         gamepad->x = SDL_JoystickGetButton(joystick, 2);
                         gamepad->y = SDL_JoystickGetButton(joystick, 3);
 
-                        for(s32 i = 5; i < numButtons; i++)
+                        if(numButtons >= 8)
                         {
-                            s32 back = SDL_JoystickGetButton(joystick, i);
+                            // !TODO: We have to find a better way to handle gamepad MENU button
+                            // atm we show game menu for only Pause Menu button on XBox one controller
+                            // issue #1220
+                            s32 back = SDL_JoystickGetButton(joystick, 7);
 
                             if(back)
                             {
@@ -942,7 +946,7 @@ static void pollEvent()
             break;
         case SDL_TEXTINPUT:
             if(strlen(event.text.text) == 1)
-                platform.studio->text = event.text.text[0];
+                platform.keyboard.text = event.text.text[0];
             break;
         case SDL_QUIT:
             platform.studio->exit();
@@ -960,6 +964,11 @@ static void pollEvent()
 
     processKeyboard();
     processGamepad();
+}
+
+static char getInputText()
+{
+    return platform.keyboard.text;
 }
 
 #if defined(CRT_SHADER_SUPPORT)
@@ -1282,7 +1291,8 @@ static void showMessageBox(const char* title, const char* message)
 
 static void setWindowTitle(const char* title)
 {
-    SDL_SetWindowTitle(platform.window, title);
+    if(platform.window)
+        SDL_SetWindowTitle(platform.window, title);
 }
 
 #if defined(__WINDOWS__) || defined(__LINUX__) || defined(__MACOSX__)
@@ -1341,84 +1351,38 @@ static void preseed()
 }
 
 #if defined(CRT_SHADER_SUPPORT)
-static char* prepareShader(const char* code)
-{
-    GPU_Renderer* renderer = GPU_GetCurrentRenderer();
-    const char* header = "";
-
-    if(renderer->shader_language == GPU_LANGUAGE_GLSL)
-    {
-        if(renderer->max_shader_version >= 120)
-            header = "#version 120\n";
-        else
-            header = "#version 110\n";
-    }
-    else if(renderer->shader_language == GPU_LANGUAGE_GLSLES)
-        header = "#version 100\nprecision mediump int;\nprecision mediump float;\n";
-
-    char* shader = SDL_malloc(strlen(header) + strlen(code) + 2);
-
-    if(shader)
-    {
-        strcpy(shader, header);
-        strcat(shader, code);       
-    }
-
-    return shader;
-}
 
 static void loadCrtShader()
 {
-    char* vertextShader = prepareShader("\
-        attribute vec3 gpu_Vertex;\n\
-        attribute vec2 gpu_TexCoord;\n\
-        attribute vec4 gpu_Color;\n\
-        uniform mat4 gpu_ModelViewProjectionMatrix;\n\
-        varying vec4 color;\n\
-        varying vec2 texCoord;\n\
-        void main(void)\n\
-        {\n\
-            color = gpu_Color;\n\
-            texCoord = vec2(gpu_TexCoord);\n\
-            gl_Position = gpu_ModelViewProjectionMatrix * vec4(gpu_Vertex, 1.0);\n\
-        }");
+    const char* vertextShader = platform.studio->config()->shader.vertex;
+    const char* pixelShader = platform.studio->config()->shader.pixel;
 
-    u32 vertex = 0;
-    if(vertextShader)
-    {
-        vertex = GPU_CompileShader(GPU_VERTEX_SHADER, vertextShader);
-        SDL_free(vertextShader);        
-    }
+    if(!vertextShader)
+        printf("Error: vertex shader is empty.\n");
+
+    if(!pixelShader)
+        printf("Error: pixel shader is empty.\n");
+
+    u32 vertex = GPU_CompileShader(GPU_VERTEX_SHADER, vertextShader);
     
     if(!vertex)
     {
-        char msg[1024];
-        sprintf(msg, "Failed to load vertex shader: %s\n", GPU_GetShaderMessage());
-        showMessageBox("Error", msg);
+        printf("Failed to load vertex shader: %s\n", GPU_GetShaderMessage());
         return;
     }
 
-    char* fragmentShader = prepareShader(platform.studio->config()->crtShader);
-
-    u32 fragment = 0;
-    if(fragmentShader)
-    {
-        fragment = GPU_CompileShader(GPU_PIXEL_SHADER, fragmentShader);
-        SDL_free(fragmentShader);       
-    }
+    u32 pixel = GPU_CompileShader(GPU_PIXEL_SHADER, pixelShader);
     
-    if(!fragment)
+    if(!pixel)
     {
-        char msg[1024];
-        sprintf(msg, "Failed to load fragment shader: %s\n", GPU_GetShaderMessage());
-        showMessageBox("Error", msg);
+        printf("Failed to load pixel shader: %s\n", GPU_GetShaderMessage());
         return;
     }
     
     if(platform.gpu.shader)
         GPU_FreeShaderProgram(platform.gpu.shader);
 
-    platform.gpu.shader = GPU_LinkShaders(vertex, fragment);
+    platform.gpu.shader = GPU_LinkShaders(vertex, pixel);
     
     if(platform.gpu.shader)
     {
@@ -1427,9 +1391,7 @@ static void loadCrtShader()
     }
     else
     {
-        char msg[1024];
-        sprintf(msg, "Failed to link shader program: %s\n", GPU_GetShaderMessage());
-        showMessageBox("Error", msg);
+        printf("Failed to link shader program: %s\n", GPU_GetShaderMessage());
     }
 }
 #endif
@@ -1455,14 +1417,6 @@ static System systemInterface =
     .httpGetSync = httpGetSync,
     .httpGet = httpGet,
 
-#if defined(FILE_DIALOGS_SUPPORT)
-    .fileDialogLoad = file_dialog_load,
-    .fileDialogSave = file_dialog_save,
-#else
-    .fileDialogLoad = NULL,
-    .fileDialogSave = NULL,
-#endif
-
     .goFullscreen = goFullscreen,
     .showMessageBox = showMessageBox,
     .setWindowTitle = setWindowTitle,
@@ -1471,6 +1425,8 @@ static System systemInterface =
     .preseed = preseed,
     .poll = pollEvent,
     .updateConfig = updateConfig,
+
+    .text = getInputText,
 };
 
 static void gpuTick()
@@ -1596,6 +1552,8 @@ static void gpuTick()
 #endif
 
     blitSound();
+
+    platform.keyboard.text = '\0';
 }
 
 #if defined(__EMSCRIPTEN__)
@@ -1637,7 +1595,7 @@ static void createMouseCursors()
         platform.mouse.cursors[i] = SDL_CreateSystemCursor(SystemCursors[i]);
 }
 
-static s32 start(s32 argc, char **argv, const char* folder)
+static s32 start(s32 argc, const char **argv, const char* folder)
 {
     SDL_SetHint(SDL_HINT_WINRT_HANDLE_BACK_BUTTON, "1");
     SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
@@ -1650,24 +1608,30 @@ static s32 start(s32 argc, char **argv, const char* folder)
 
     platform.studio = studioInit(argc, argv, platform.audio.spec.freq, folder, &systemInterface);
 
-    const s32 Width = TIC80_FULLWIDTH * platform.studio->config()->uiScale;
-    const s32 Height = TIC80_FULLHEIGHT * platform.studio->config()->uiScale;
+    {
+        const s32 Width = TIC80_FULLWIDTH * platform.studio->config()->uiScale;
+        const s32 Height = TIC80_FULLHEIGHT * platform.studio->config()->uiScale;
 
-    platform.window = SDL_CreateWindow( TIC_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        Width, Height, SDL_WINDOW_SHOWN 
-            | SDL_WINDOW_RESIZABLE
+        platform.window = SDL_CreateWindow( TIC_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            Width, Height, SDL_WINDOW_SHOWN 
+                | SDL_WINDOW_RESIZABLE
 #if defined(CRT_SHADER_SUPPORT)
-            | SDL_WINDOW_OPENGL
+                | SDL_WINDOW_OPENGL
 #endif            
-            | SDL_WINDOW_ALLOW_HIGHDPI);
+#if !defined(__EMSCRIPTEN__) && !defined(__MACOSX__)
+                | SDL_WINDOW_ALLOW_HIGHDPI
+#endif
+                );
 
-    setWindowIcon();
-    createMouseCursors();
+        setWindowIcon();
+        createMouseCursors();
 
-    initGPU();
+        initGPU();
 
-    if(platform.studio->config()->goFullscreen)
-        goFullscreen();
+        if(platform.studio->config()->goFullscreen)
+            goFullscreen();
+    }
+
 
 #if defined(__EMSCRIPTEN__)
     emscripten_set_main_loop(emsGpuTick, 0, 1);
@@ -1707,18 +1671,20 @@ static s32 start(s32 argc, char **argv, const char* folder)
     if(platform.audio.cvt.buf)
         SDL_free(platform.audio.cvt.buf);
 
-    destroyGPU();
+    {
+        destroyGPU();
 
 #if defined(TOUCH_INPUT_SUPPORT)
-    if(platform.gamepad.touch.pixels)
-        SDL_free(platform.gamepad.touch.pixels);
+        if(platform.gamepad.touch.pixels)
+            SDL_free(platform.gamepad.touch.pixels);
 #endif    
 
-    SDL_DestroyWindow(platform.window);
-    SDL_CloseAudioDevice(platform.audio.device);
+        SDL_DestroyWindow(platform.window);
+        SDL_CloseAudioDevice(platform.audio.device);
 
-    for(s32 i = 0; i < COUNT_OF(platform.mouse.cursors); i++)
-        SDL_FreeCursor(platform.mouse.cursors[i]);
+        for(s32 i = 0; i < COUNT_OF(platform.mouse.cursors); i++)
+            SDL_FreeCursor(platform.mouse.cursors[i]);
+    }
 
     return 0;
 }
@@ -1818,7 +1784,7 @@ s32 main(s32 argc, char **argv)
 
 #else
 
-    return start(argc, argv, folder);
+    return start(argc, (const char **)argv, folder);
     
 #endif
 }
